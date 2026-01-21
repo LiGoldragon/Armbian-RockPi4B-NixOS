@@ -1,0 +1,8 @@
+{
+  "switch_branch": "edge",
+  "desktop": { "environment": "gnome", "method": "auto", "reboot_after": true },
+  "themes": { "install_yaru": true, "install_gnome_tweaks": true, "install_shell_extensions": true },
+  "flatpak": { "enable": true, "add_flathub": true },
+  "apps": { "browser": "chromium-flatpak", "zoom": "install-if-amd64" },
+  "packages": { "extra_apt": ["mesa-utils", "vainfo", "pipewire", "pipewire-pulse", "wireplumber"] }
+}

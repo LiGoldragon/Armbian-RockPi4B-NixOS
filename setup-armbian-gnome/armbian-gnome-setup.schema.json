@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://criome.local/schemas/armbian-gnome-setup.schema.json",
+  "title": "ArmbianGnomeSetupConfig",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["desktop", "packages"],
+  "properties": {
+    "switch_branch": {
+      "description": "Requested Armbian kernel/userspace channel. 'edge' is interactive via armbian-config.",
+      "type": "string",
+      "enum": ["no-change", "edge"],
+      "default": "no-change"
+    },
+    "desktop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment"],
+      "properties": {
+        "environment": {
+          "type": "string",
+          "enum": ["gnome"],
+          "default": "gnome"
+        },
+        "display_manager": {
+          "type": "string",
+          "enum": ["gdm3"],
+          "default": "gdm3"
+        },
+        "method": {
+          "description": "Preferred installation path. 'armbian-tool' uses armbian-install-desktop when available.",
+          "type": "string",
+          "enum": ["auto", "armbian-tool", "apt-meta"],
+          "default": "auto"
+        },
+        "reboot_after": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "themes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "install_yaru": { "type": "boolean", "default": true },
+        "install_gnome_tweaks": { "type": "boolean", "default": true },
+        "install_shell_extensions": { "type": "boolean", "default": true }
+      },
+      "default": {}
+    },
+    "flatpak": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enable": { "type": "boolean", "default": true },
+        "add_flathub": { "type": "boolean", "default": true }
+      },
+      "default": {}
+    },
+    "apps": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "browser": {
+          "description": "Google Chrome has no official Linux arm64 build; Chromium is the safe default on Rock Pi 4B.",
+          "type": "string",
+          "enum": ["none", "chromium-apt", "chromium-flatpak"],
+          "default": "chromium-apt"
+        },
+        "zoom": {
+          "description": "Zoom provides official Linux packages for x86_64; on arm64 this is skipped by default.",
+          "type": "string",
+          "enum": ["skip", "install-if-amd64"],
+          "default": "skip"
+        }
+      },
+      "default": {}
+    },
+    "packages": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "extra_apt": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": [
+            "mesa-utils",
+            "vainfo",
+            "pipewire",
+            "pipewire-pulse",
+            "wireplumber"
+          ]
+        }
+      },
+      "default": {}
+    }
+  }
+}
