@@ -1,14 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# armbian-gnome-bleeding-edge.sh
+# setup-armbian-gnome/armbian-gnome-bleeding-edge.sh
+#
+# One-time workstation bootstrap for Armbian (Rock Pi 4B / RK3399 friendly).
+#
 # Purpose:
-# - Update Armbian userspace safely
-# - Optionally guide an interactive switch to "edge" via armbian-config
-# - Install GNOME desktop via Armbian tooling when available
-# - Add a polished baseline (Tweaks, extensions, Yaru)
-# - Install Chromium (APT or Flatpak). Avoids claiming Google Chrome arm64 exists.
-# - Optionally install Zoom only on amd64.
+# - Upgrade userspace packages
+# - Optionally guide an interactive switch to Armbian "edge" via armbian-config
+# - Install GNOME + GDM3 + force Xorg (Wayland off; RK3399 stable path)
+# - Install a usable desktop payload (GNOME Software, Flatpak integration)
+# - Enable Flatpak + Flathub
+# - Install GNOME Tweaks + extensions + baseline theming/fonts
+# - Install Google Chrome (ARM64) if available, otherwise fallback to Chromium
+# - Install common baseline apps (terminal, PDF, media, audio control)
+#
+# Usage:
+#   sudo ./setup-armbian-gnome/armbian-gnome-bleeding-edge.sh [./armbian-gnome-setup.json]
+#
+# Notes:
+# - If .switch_branch == "edge", the script pauses to run armbian-config interactively.
+# - After the branch switch + reboot, re-run the script.
 
 CONFIG_PATH="${1:-./armbian-gnome-setup.json}"
 
@@ -17,7 +29,6 @@ die() {
     printf "\nERROR: %s\n" "$*" >&2
     exit 1
 }
-
 need_cmd() { command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"; }
 
 ensure_root() {
@@ -66,46 +77,71 @@ maybe_switch_branch_edge() {
         return 0
     fi
 
-    # armbian-config is ncurses and not reliable to automate non-interactively.
-    # Official guidance is to use armbian-config to select edge/rolling. :contentReference[oaicite:0]{index=0}
     need_cmd armbian-config
-    pause_for_user "Interactive step required: run 'armbian-config' → System → (Rolling / Alternative kernels) → select EDGE. Reboot if prompted, then re-run this script with the same config."
+    pause_for_user "Interactive step: run 'armbian-config' → System → (Rolling / Alternative kernels) → select EDGE. Reboot if prompted, then re-run this script."
 }
 
 install_gnome_desktop() {
     local method env
     method="$(read_json '.desktop.method // "auto"')"
     env="$(read_json '.desktop.environment // "gnome"')"
-
     [[ "$env" == "gnome" ]] || die "Only GNOME supported by this script."
+
+    log "Installing GNOME desktop."
+    apt-get update
 
     if [[ "$method" == "auto" || "$method" == "armbian-tool" ]]; then
         if command -v armbian-install-desktop >/dev/null 2>&1; then
-            log "Installing GNOME via armbian-install-desktop (Armbian-supported path)."
-            # Armbian documents desktop installs via its tooling. :contentReference[oaicite:1]{index=1}
+            log "Using armbian-install-desktop (interactive). Select: GNOME + gdm3 + extras."
             armbian-install-desktop
             return 0
         fi
         [[ "$method" == "armbian-tool" ]] && die "armbian-install-desktop not present."
     fi
 
-    log "Installing GNOME via apt meta-packages (fallback path)."
-    apt-get update
-
-    # Armbian forum guidance mentions armbian-<codename>-desktop-gnome for some images. :contentReference[oaicite:2]{index=2}
+    # Fallbacks
     if [[ -n "${CODENAME:-}" ]] && apt-cache show "armbian-${CODENAME}-desktop-gnome" >/dev/null 2>&1; then
         DEBIAN_FRONTEND=noninteractive apt-get -y install "armbian-${CODENAME}-desktop-gnome"
-        return 0
-    fi
-
-    # Generic Debian/Ubuntu fallback.
-    if apt-cache show gnome-desktop >/dev/null 2>&1; then
+    elif apt-cache show gnome-desktop >/dev/null 2>&1; then
         DEBIAN_FRONTEND=noninteractive apt-get -y install gnome-desktop
     elif apt-cache show task-gnome-desktop >/dev/null 2>&1; then
         DEBIAN_FRONTEND=noninteractive apt-get -y install task-gnome-desktop
     else
-        DEBIAN_FRONTEND=noninteractive apt-get -y install gnome-shell gdm3
+        DEBIAN_FRONTEND=noninteractive apt-get -y install gnome-shell gnome-session
     fi
+
+    # Ensure a display manager exists.
+    if ! dpkg -s gdm3 >/dev/null 2>&1; then
+        log "Installing gdm3."
+        DEBIAN_FRONTEND=noninteractive apt-get -y install gdm3
+    fi
+}
+
+configure_gdm_xorg() {
+    log "Configuring GDM for Xorg (Wayland disabled)."
+    install -d -m 755 /etc/gdm3
+
+    cat >/etc/gdm3/daemon.conf <<'EOF'
+[daemon]
+WaylandEnable=false
+DefaultSession=gnome-xorg.desktop
+EOF
+
+    systemctl enable gdm3 || true
+}
+
+install_desktop_payload() {
+    log "Installing GNOME desktop payload (Software Center, Flatpak plugin, Tweaks, tools)."
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get -y install \
+        gnome-software \
+        gnome-software-plugin-flatpak \
+        gnome-tweaks \
+        gnome-shell-extensions \
+        dconf-editor \
+        gnome-terminal \
+        nautilus \
+        evince
 }
 
 install_polish() {
@@ -114,7 +150,7 @@ install_polish() {
     exts="$(read_json '.themes.install_shell_extensions // true')"
     yaru="$(read_json '.themes.install_yaru // true')"
 
-    log "Installing UX baseline packages."
+    log "Installing polish (themes, fonts)."
     apt-get update
 
     pkgs=()
@@ -122,15 +158,11 @@ install_polish() {
     [[ "$exts" == "true" ]] && pkgs+=(gnome-shell-extensions)
     [[ "$yaru" == "true" ]] && pkgs+=(yaru-theme-gnome-shell yaru-theme-gtk yaru-theme-icon)
 
-    # Always-useful fonts for a more polished UI.
     pkgs+=(fonts-cantarell fonts-inter)
 
     if [[ "${#pkgs[@]}" -gt 0 ]]; then
         DEBIAN_FRONTEND=noninteractive apt-get -y install "${pkgs[@]}"
     fi
-
-    log "GNOME info: GNOME platform reference. :contentReference[oaicite:3]{index=3}"
-    log "GNOME extensions site (for post-install toggles). :contentReference[oaicite:4]{index=4}"
 }
 
 install_extra_apt_packages() {
@@ -151,48 +183,76 @@ setup_flatpak_if_enabled() {
         return 0
     }
 
-    log "Installing Flatpak."
+    log "Installing Flatpak + wiring GNOME Software."
     apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get -y install flatpak
-
-    # On GNOME, the plugin helps GNOME Software manage Flatpaks (optional, but useful). :contentReference[oaicite:5]{index=5}
-    if apt-cache show gnome-software-plugin-flatpak >/dev/null 2>&1; then
-        DEBIAN_FRONTEND=noninteractive apt-get -y install gnome-software-plugin-flatpak
-    fi
+    DEBIAN_FRONTEND=noninteractive apt-get -y install flatpak gnome-software-plugin-flatpak
 
     if [[ "$add_flathub" == "true" ]]; then
         log "Adding Flathub remote (system-wide)."
         flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
     fi
-
-    log "Flatpak references. :contentReference[oaicite:6]{index=6}"
 }
 
-install_browser() {
-    local browser
-    browser="$(read_json '.apps.browser // "chromium-apt"')"
+install_chrome_or_fallback() {
+    local want
+    want="$(read_json '.apps.browser // "chrome"')"
 
-    case "$browser" in
+    case "$want" in
         none)
             log "Browser: none"
+            ;;
+        chrome | google-chrome | google-chrome-stable)
+            log "Installing Google Chrome if available (fallback to Chromium if not)."
+            tmpdir="$(mktemp -d)"
+            if command -v wget >/dev/null 2>&1; then
+                (cd "$tmpdir" && wget -q -O chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.deb) || true
+            else
+                apt-get update
+                DEBIAN_FRONTEND=noninteractive apt-get -y install wget
+                (cd "$tmpdir" && wget -q -O chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.deb) || true
+            fi
+
+            if [[ -s "$tmpdir/chrome.deb" ]]; then
+                apt-get update
+                DEBIAN_FRONTEND=noninteractive apt-get -y install "$tmpdir/chrome.deb"
+                rm -rf "$tmpdir"
+                return 0
+            fi
+
+            rm -rf "$tmpdir"
+            log "Chrome arm64 package not retrieved; installing Chromium."
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get -y install chromium ||
+                DEBIAN_FRONTEND=noninteractive apt-get -y install chromium-browser
             ;;
         chromium-apt)
             log "Installing Chromium via APT."
             apt-get update
             DEBIAN_FRONTEND=noninteractive apt-get -y install chromium ||
                 DEBIAN_FRONTEND=noninteractive apt-get -y install chromium-browser
-            log "Chromium project reference. :contentReference[oaicite:7]{index=7}"
             ;;
         chromium-flatpak)
-            log "Installing Chromium via Flatpak (Flathub)."
+            log "Installing Chromium via Flatpak."
             need_cmd flatpak
             flatpak install -y flathub org.chromium.Chromium
-            log "Flathub Chromium app page. :contentReference[oaicite:8]{index=8}"
             ;;
         *)
-            die "Unknown browser option: $browser"
+            die "Unknown browser option: $want"
             ;;
     esac
+}
+
+install_baseline_apps() {
+    log "Installing baseline workstation apps."
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get -y install \
+        pipewire pipewire-pulse wireplumber \
+        pavucontrol \
+        vlc \
+        mesa-utils vainfo \
+        curl ca-certificates \
+        xdg-utils \
+        unzip
 }
 
 install_zoom_if_applicable() {
@@ -204,23 +264,26 @@ install_zoom_if_applicable() {
     }
 
     if [[ "$ARCH" != "amd64" ]]; then
-        log "Zoom: skipped because arch=$ARCH (official Linux packages are documented for x86_64). :contentReference[oaicite:9]{index=9}"
+        log "Zoom: skipped because arch=$ARCH"
         return 0
     fi
 
     log "Installing Zoom (amd64)."
-    # Zoom download center provides the current deb; the exact filename can vary. :contentReference[oaicite:10]{index=10}
-    # This uses the commonly documented 'latest' URL pattern for amd64.
     tmpdir="$(mktemp -d)"
     (cd "$tmpdir" && wget -q https://zoom.us/client/latest/zoom_amd64.deb && apt-get -y install ./zoom_amd64.deb)
     rm -rf "$tmpdir"
+}
+
+enable_graphical_boot() {
+    log "Setting default target to graphical."
+    systemctl set-default graphical.target
 }
 
 maybe_reboot() {
     local reboot_after
     reboot_after="$(read_json '.desktop.reboot_after // true')"
     if [[ "$reboot_after" == "true" ]]; then
-        pause_for_user "Reboot is recommended to start GNOME cleanly."
+        pause_for_user "Reboot recommended to start GNOME + GDM cleanly."
         reboot
     else
         log "Reboot: disabled by config."
@@ -235,12 +298,19 @@ main() {
     detect_platform
     apt_update_upgrade
     maybe_switch_branch_edge
+
     install_gnome_desktop
+    configure_gdm_xorg
+    install_desktop_payload
+
     install_polish
-    install_extra_apt_packages
     setup_flatpak_if_enabled
-    install_browser
+    install_chrome_or_fallback
+    install_baseline_apps
+    install_extra_apt_packages
     install_zoom_if_applicable
+
+    enable_graphical_boot
 
     log "Done."
     maybe_reboot
